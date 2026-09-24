@@ -238,10 +238,6 @@ Both are drawn at random with no length or content stratification, so the 260 re
 distribution *before* any top-ups. Median length in the annotation pool is 360 characters
 (range 20–6,644).
 
-**Deliverable.** One CSV in the repo root, columns: `review_id`, `text`, `label`, `notes`,
-`pre_labeled`, plus `rating` and `n_votes` carried through as metadata (not model inputs — they're
-there so I can check whether my labels are accidentally tracking star rating). One complete labeled
-file — the notebook does the 70/15/15 split itself.
 
 ## 5. Annotation workflow
 
@@ -266,8 +262,8 @@ reading `Analysis` or `impression ` become distinct classes at train time and qu
 real ones. The script flags case and whitespace variants, invalid labels, blanks, and duplicate
 `review_id`s; reports class counts against the §4 targets; and prints **median length per class**,
 which is my early warning for the length confound — if the three medians are widely separated, I
-should expect the length-only baseline in §6 to be hard to beat and I want to know that before
-training, not after.
+should treat any strong result with suspicion as possibly length-driven (§6), and I want to know
+that going in rather than after training.
 
 ## 6. Evaluation metrics
 
@@ -278,17 +274,42 @@ while being useless. Second and more importantly, **length is a massive confound
 analysis" would score well on accuracy. Accuracy can't tell me whether I trained a discourse
 classifier or a character counter.
 
-What I'll report:
+**The metrics are precision, recall and F1**, which is what the starter notebook produces. Its
+evaluation cells call `sklearn.metrics.classification_report`, so for both models I get precision,
+recall, F1 and support **per class**, plus macro and weighted averages, alongside `accuracy_score`
+and a confusion matrix saved to `confusion_matrix.png`.
 
-| Metric | Why this one |
-|---|---|
-| **Macro-F1** (headline) | Weights all three classes equally, so a model that ignores the smallest class is penalized. This is the number I'll quote as *the* result. |
-| **Per-class precision & recall** | The errors aren't symmetric. If TakeMeter surfaces substantive reviews, a false `analysis` (junk promoted as insight) costs a user's trust; a missed `analysis` just means one good review stays buried. So `analysis` **precision** is the metric that governs usefulness. |
-| **Confusion matrix** | Tests my §3 prediction directly. I expect `analysis`↔`impression` to be the dominant confusion and `logbook` to be mostly separable. If instead `logbook` smears across the other two, the label is unsound and I'll say so. |
-| **Length-only baseline** | Logistic regression on character count alone. The fine-tune has to beat it by a clear margin or I haven't demonstrated anything. |
-| **Majority-class baseline** | Floor. |
-| **Self-agreement (Cohen's κ)** | I re-label 40 examples ≥5 days later, blind to my original labels. This is the human ceiling. If my own κ with myself is ~0.75, a model at 0.80 macro-F1 is at ceiling and I should not chase 0.95. |
-| **Bootstrap 95% CI on macro-F1** | At n=200 the test split is ~30 examples. A single example is ~3 points of accuracy. Reporting a point estimate without a CI would be dishonest about the precision of the result. |
+| Metric | Source in the notebook | Why it matters here |
+|---|---|---|
+| **Macro-F1** (headline) | `classification_report` macro avg row | Weights all three classes equally, so a model that ignores the smallest class is penalized. This is the number I'll quote as *the* result. |
+| **Per-class precision** | `classification_report`, per row | The errors aren't symmetric. A false `analysis` (junk promoted as insight) costs a reader's trust; a missed `analysis` just leaves one good review buried. **`analysis` precision is the number that governs whether this is useful.** |
+| **Per-class recall** | `classification_report`, per row | Catches the failure where a class technically exists in the output but the model almost never predicts it. |
+| **Accuracy** | `accuracy_score` | Reported, but not the headline — see above. |
+| **Confusion matrix** | `confusion_matrix` → `confusion_matrix.png` | Tests my §3 prediction directly. I expect `analysis`↔`impression` to be the dominant confusion and `logbook` to be mostly separable. If instead `logbook` smears across the other two, the label is unsound and I'll say so. |
+| **Zero-shot baseline comparison** | Groq `llama-4-scout-17b-16e-instruct`, same test set, same metrics | This is the notebook's built-in comparison and the thing fine-tuning has to beat. I'll compare on macro-F1, not just the accuracy the summary cell prints. |
+| **Misclassification dump** | wrong-prediction cell (text, true, predicted, confidence) | Feeds the failure analysis in §9. |
+
+### Three things I have to handle by hand
+
+1. **The notebook selects checkpoints on accuracy.** `compute_metrics` returns accuracy only and
+   `metric_for_best_model="accuracy"`, so with unbalanced classes the saved "best" checkpoint can be
+   one that has quietly given up on the smallest class. I'm not modifying the starter, so I'll note
+   in the writeup that model selection used accuracy while reporting is macro-F1, and check the
+   per-class F1s for a collapsed class rather than assuming selection protected against it.
+2. **`evaluation_results.json` stores accuracy only.** Macro and per-class precision/recall/F1 have
+   to be read off the printed `classification_report` for both models and copied into the README by
+   hand. Worth being careful here — this is where a transcription error would go unnoticed.
+3. **Length is a confound I can't measure with a metric the notebook provides.** `analysis` reviews
+   are systematically longer, so a model that learned only "long = analysis" would score well. There
+   is no length-only baseline cell, so I'll test this qualitatively instead: `check_labels.py`
+   prints median length per class before training, and the misclassification dump shows whether
+   errors are concentrated in long `impression` and short `analysis` reviews. If they are, I'll say
+   the model may be partly length-driven rather than claiming it learned discourse structure.
+
+**Human ceiling.** Separate from the notebook: I re-label 40 examples ≥5 days later, blind, and
+report self-agreement (Cohen's κ) via `check_labels.py`, plus the second-annotator κ in §7. If my
+own agreement with myself is ~0.75, a model at 0.80 macro-F1 is already at ceiling and chasing 0.95
+would be fitting noise.
 
 ## 7. Inter-annotator reliability (stretch goal)
 
@@ -344,10 +365,12 @@ work and report the original number.
 
 Stated so it's objectively checkable on the held-out test split at the end:
 
-**Must hit (the "it works" bar):**
-1. **Macro-F1 ≥ 0.75** on the held-out test set.
-2. **Beats the length-only baseline by ≥ 10 points** of macro-F1, absolute. This is the one that
-   proves the model learned discourse structure rather than review length.
+**Must hit (the "it works" bar).** Every number here is one the notebook prints, so I can check
+each of them directly against the `classification_report` output:
+1. **Macro-F1 ≥ 0.75** on the held-out test set (macro avg row, fine-tuned model).
+2. **Beats the zero-shot Groq baseline by ≥ 10 points of macro-F1**, absolute — comparing the macro
+   avg rows of the two `classification_report`s, not the accuracy-only summary cell. If fine-tuning
+   can't beat a prompted off-the-shelf model on my own taxonomy, the fine-tune wasn't worth doing.
 3. **No individual class below 0.60 F1.** A model that nails two classes and can't find the third
    hasn't validated my taxonomy.
 4. **`analysis` precision ≥ 0.80.**
@@ -359,11 +382,19 @@ they'll abandon one that promotes "AMAZING :)" as insight. I'd ship at ≥0.85 p
 recall on `analysis`, and I would *not* ship a model that clears 0.75 macro-F1 by being excellent at
 `impression` and mediocre at `analysis`.
 
-**Honest caveats I'm committing to in the writeup.** The ~30-example test split gives a macro-F1
-confidence interval of roughly ±0.15, so a 0.78 result is not meaningfully different from 0.72 and I
-won't present it as though it is. All labels come from one annotator (me), so the ceiling is my own
-consistency, measured in §6 and §7 and reported. And the dataset is a snapshot of one platform's reviewers,
-skewed toward English-language and toward books that get reviewed at all.
+**Honest caveats I'm committing to in the writeup.**
+
+- **The test split is tiny.** At n=200 the 15% test split is ~30 examples, so one example moves
+  accuracy by ~3 points and a per-class F1 is computed over roughly 10 items. A 0.78 macro-F1 is
+  not meaningfully better than 0.72 and I won't present it as though it is.
+- **The baseline comparison is partly a prompt-quality measurement.** The Groq baseline's score
+  depends on how well I wrote the zero-shot prompt. I'll paste the exact prompt into the README so
+  the comparison can be judged, and I'll report the unparseable-response count — the notebook drops
+  those before scoring, which flatters the baseline.
+- **Model selection ran on accuracy, reporting runs on macro-F1** (see §6). Stated, not hidden.
+- **One annotator.** The ceiling is my own consistency, measured in §6 and §7 and reported.
+- **One platform.** English-language Goodreads reviewers, skewed toward books that get reviewed at
+  all.
 
 ## 9. AI tool plan
 
