@@ -4,6 +4,9 @@
 **Task:** 3-way classification of review discourse (`analysis` / `impression` / `logbook`)
 **Data source:** UCSD Book Graph `goodreads_reviews_dedup.json` (Wan & McAuley), public research dump
 
+
+Demo link: 
+
 ---
 
 ## 1. Community

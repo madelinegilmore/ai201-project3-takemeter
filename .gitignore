@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project 3 data: raw dumps (16.7GB) -- never commit
+goodreads_reviews_dedup.json
+goodreads_reviews_*.json
+!goodreads_reviews_400.json
